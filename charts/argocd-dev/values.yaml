@@ -1,0 +1,444 @@
+argo-cd:
+  configs:
+    secret:
+      githubSecret: <path:secrets/devops/sensitive/data/argocd-github-webhook#password>
+  apiVersionOverrides:
+    ingress: "networking.k8s.io/v1"
+  global:
+    logging:
+      level: warn
+      format: json
+    imagePullSecrets:
+      - name: regcred
+  repoServer:
+    nodeSelector:
+      type: private
+    envFrom:
+      - secretRef:
+          name: vault-configuration
+    image:
+      repository: mogo/mogo-argocd
+      imagePullPolicy: Always
+      tag: "master"
+  dex:
+    # -- Argo CD server log format: Either `text` or `json`
+    logFormat: json
+    # -- Argo CD server log level
+    logLevel: warn
+    enabled: true
+    nodeSelector:
+      type: private
+  configEnabled: true
+  controller:
+    # -- Argo CD server log format: Either `text` or `json`
+    logFormat: json
+    # -- Argo CD server log level
+    logLevel: warn
+    nodeSelector:
+      type: private
+  applicationSet:
+    # -- Argo CD server log format: Either `text` or `json`
+    logFormat: json
+    # -- Argo CD server log level
+    logLevel: warn
+    nodeSelector:
+      type: private
+  notifications:
+    # -- Argo CD server log format: Either `text` or `json`
+    logFormat: json
+    # -- Argo CD server log level
+    logLevel: warn
+    nodeSelector:
+      type: private
+    argocdUrl: "https://argocd.dev.mogodevops.com"
+    
+    bots:
+      slack:
+        name: argocd-notifications-bot
+        service:
+          type: ClusterIP 
+          port: 8080
+        enabled: true
+        nodeSelector:
+          type: private
+    cm:
+      name: "argocd-notifications-cm"
+    secret:
+      create: true
+      items:
+        slack-token: <path:secrets/artifactory/data/argocd-slack-secret#token>
+        slack-signing-secret: <path:secrets/artifactory/data/argocd-slack-secret#signingSecret>
+    notifiers:
+      service.slack: |
+        token: $slack-token
+        signingSecret: $slack-signing-secret
+    nodeSelector:
+      type: private
+    triggers:
+      trigger.on-deployed: |
+        - description: Application is synced and healthy. Triggered once per commit.
+          oncePer: app.status.sync.revision
+          send:
+          - app-deployed
+          when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+      trigger.on-health-degraded: |
+       - description: Application has degraded
+         send:
+         - app-health-degraded
+         when: app.status.health.status == 'Degraded'
+      trigger.on-sync-failed: |
+       - description: Application syncing has failed
+         send:
+         - app-sync-failed
+         when: app.status.operationState.phase in ['Error', 'Failed']
+      trigger.on-sync-running: |
+       - description: Application is being synced
+         send:
+         - app-sync-running
+         when: app.status.operationState.phase in ['Running']
+      trigger.on-sync-status-unknown: |
+       - description: Application status is 'Unknown'
+         send:
+         - app-sync-status-unknown
+         when: app.status.sync.status == 'Unknown'
+      trigger.on-sync-succeeded: |
+       - description: Application syncing has succeeded
+         send:
+         - app-sync-succeeded
+         when: app.status.operationState.phase in ['Succeeded']
+      defaultTriggers: |
+       - on-sync-status-unknown
+
+    subscriptions:
+      - recipients:
+        - slack:devops-argocd
+        triggers:
+        - on-sync-status-unknown
+      - recipients:
+        - slack:devops-argocd
+        triggers:
+        - on-sync-succeeded
+      - recipients:
+        - slack:devops-argocd
+        triggers:
+        - on-sync-failed
+      - recipients:
+        - slack:devops-argocd
+        triggers:
+        - on-sync-running
+      - recipients:
+        - slack:devops-argocd
+        triggers:
+        - on-deployed
+      - recipients:
+        - slack:devops-argocd
+        triggers:
+        - on-health-degraded
+    templates: 
+      template.app-deployed: |
+        message: |
+         {{if eq .serviceType "slack"}}:white_check_mark:{{end}} Application {{.app.metadata.name}} is now running new version of deployments manifests.
+        slack:
+         attachments: |
+           [{
+             "title": "{{ .app.metadata.name}}",
+             "title_link":"{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+             "color": "18be52",
+             "fields": [
+             {
+               "title": "Sync Status",
+               "value": "{{.app.status.sync.status}}",
+               "short": true
+             },
+             {
+               "title": "Repository",
+               "value": "{{.app.spec.source.repoURL}}",
+               "short": true
+             },
+             {
+               "title": "Revision",
+               "value": "{{.app.status.sync.revision}}",
+               "short": true
+             }
+             {{range $index, $c := .app.status.conditions}}
+             {{if not $index}},{{end}}
+             {{if $index}},{{end}}
+             {
+               "title": "{{$c.type}}",
+               "value": "{{$c.message}}",
+               "short": true
+             }
+             {{end}}
+             ]
+           }]
+      template.app-sync-failed: |
+        message: |
+         {{if eq .serviceType "slack"}}:exclamation:{{end}}  The sync operation of application {{.app.metadata.name}} has failed at {{.app.status.operationState.finishedAt}} with the following error: {{.app.status.operationState.message}}
+         Sync operation details are available at: {{.context.argocdUrl}}/applications/{{.app.metadata.name}}?operation=true .
+        slack:
+         attachments: |-
+           [{
+             "title": "{{ .app.metadata.name}}",
+             "title_link":"{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+             "color": "E96D76",
+             "fields": [
+             {
+               "title": "Sync Status",
+               "value": "{{.app.status.sync.status}}",
+               "short": true
+             },
+             {
+               "title": "Repository",
+               "value": "{{.app.spec.source.repoURL}}",
+               "short": true
+             }
+             {{range $index, $c := .app.status.conditions}}
+             {{if not $index}},{{end}}
+             {{if $index}},{{end}}
+             {
+               "title": "{{$c.type}}",
+               "value": "{{$c.message}}",
+               "short": true
+             }
+             {{end}}
+             ]
+           }]
+      template.app-sync-running: |
+        message: |
+         The sync operation of application {{.app.metadata.name}} has started at {{.app.status.operationState.startedAt}}.
+         Sync operation details are available at: {{.context.argocdUrl}}/applications/{{.app.metadata.name}}?operation=true .
+        slack:
+         attachments: |-
+           [{
+             "title": "{{ .app.metadata.name}}",
+             "title_link":"{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+             "color": "0DADEA",
+             "fields": [
+             {
+               "title": "Sync Status",
+               "value": "{{.app.status.sync.status}}",
+               "short": true
+             },
+             {
+               "title": "Repository",
+               "value": "{{.app.spec.source.repoURL}}",
+               "short": true
+             }
+             {{range $index, $c := .app.status.conditions}}
+             {{if not $index}},{{end}}
+             {{if $index}},{{end}}
+             {
+               "title": "{{$c.type}}",
+               "value": "{{$c.message}}",
+               "short": true
+             }
+             {{end}}
+             ]
+           }]
+      template.app-sync-status-unknown: |
+        message: |
+         {{if eq .serviceType "slack"}}:exclamation:{{end}} Application {{.app.metadata.name}} sync is 'Unknown'.
+         Application details: {{.context.argocdUrl}}/applications/{{.app.metadata.name}}.
+         {{if ne .serviceType "slack"}}
+         {{range $c := .app.status.conditions}}
+             * {{$c.message}}
+         {{end}}
+         {{end}}
+        slack:
+         attachments: |-
+           [{
+             "title": "{{ .app.metadata.name}}",
+             "title_link":"{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+             "color": "E96D76",
+             "fields": [
+             {
+               "title": "Sync Status",
+               "value": "{{.app.status.sync.status}}",
+               "short": true
+             },
+             {
+               "title": "Repository",
+               "value": "{{.app.spec.source.repoURL}}",
+               "short": true
+             }
+             {{range $index, $c := .app.status.conditions}}
+             {{if not $index}},{{end}}
+             {{if $index}},{{end}}
+             {
+               "title": "{{$c.type}}",
+               "value": "{{$c.message}}",
+               "short": true
+             }
+             {{end}}
+             ]
+           }]
+      template.app-sync-succeeded: |
+        message: |
+         {{if eq .serviceType "slack"}}:white_check_mark:{{end}} Application {{.app.metadata.name}} has been successfully synced at {{.app.status.operationState.finishedAt}}.
+         Sync operation details are available at: {{.context.argocdUrl}}/applications/{{.app.metadata.name}}?operation=true .
+        slack:
+         attachments: |-
+           [{
+             "title": "{{ .app.metadata.name}}",
+             "title_link":"{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+             "color": "18be52",
+             "fields": [
+             {
+               "title": "Sync Status",
+               "value": "{{.app.status.sync.status}}",
+               "short": true
+             },
+             {
+               "title": "Repository",
+               "value": "{{.app.spec.source.repoURL}}",
+               "short": true
+             }
+             {{range $index, $c := .app.status.conditions}}
+             {{if not $index}},{{end}}
+             {{if $index}},{{end}}
+             {
+               "title": "{{$c.type}}",
+               "value": "{{$c.message}}",
+               "short": true
+             }
+             {{end}}
+             ]
+           }]
+      template.app-health-degraded: |
+        message: |
+          {{if eq .serviceType "slack"}}:exclamation:{{end}} Application {{.app.metadata.name}} has degraded.
+          Application details: {{.context.argocdUrl}}/applications/{{.app.metadata.name}}.
+        slack:
+         attachments: |-
+           [{
+             "title": "{{ .app.metadata.name}}",
+             "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+             "color": "f4c030",
+             "fields": [
+             {
+               "title": "Sync Status",
+               "value": "{{.app.status.sync.status}}",
+               "short": true
+             },
+             {
+               "title": "Repository",
+               "value": "{{.app.spec.source.repoURL}}",
+               "short": true
+             }
+             {{range $index, $c := .app.status.conditions}}
+             {{if not $index}},{{end}}
+             {{if $index}},{{end}}
+             {
+               "title": "{{$c.type}}",
+               "value": "{{$c.message}}",
+               "short": true
+             }
+             {{end}}
+             ]
+           }]
+    
+  redis:
+    # -- Argo CD server log format: Either `text` or `json`
+    logFormat: json
+    # -- Argo CD server log level
+    logLevel: warn
+    nodeSelector:
+      type: private
+  server:
+    # -- Argo CD server log format: Either `text` or `json`
+    logFormat: json
+    # -- Argo CD server log level
+    logLevel: warn
+    nodeSelector:
+      type: private
+    rbacConfig:
+      policy.default: role:readonly
+      policy.csv: |
+        g, role:org-admin, role:admin
+        g, "05b05cdc-a793-402e-8e94-95a05b24076a", role:admin #Admin role to devops
+        # Add devops member email below if required
+        # g, "<email address>", role:admin
+        g, "Liam.Helmer@mogo.ca", role:admin
+        g, "shahriar.shafiullah@mogo.ca", role:admin
+        g, "rishitha.mandava@mogo.ca", role:admin
+      scopes: '[groups,email]'
+    ingress:
+      enabled: true  
+      annotations:
+        nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+        nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+        nginx.ingress.kubernetes.io/websocket-services: "argocd-server"
+        nginx.ingress.kubernetes.io/server-snippets: |
+          location /terminal {
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_http_version 1.1;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header Host $host;
+            proxy_set_header Connection "upgrade";
+            proxy_cache_bypass $http_upgrade;
+            }
+      ingressClassName: nginx
+           
+      hosts: 
+        - argocd.dev.mogodevops.com
+      extraPaths:
+        - path: /slack
+          backend:
+            service:
+              name: argo-cd-argocd-notifications-controller-bot
+              port:
+                number: 80
+          pathType: Prefix
+
+    extraArgs:
+      - --insecure
+    config:
+      url: "https://argocd.dev.mogodevops.com"
+      exec.enabled: "true"
+      configManagementPlugins: |-
+          - name: argocd-vault-plugin
+            generate:
+              command: ["argocd-vault-plugin"]
+              args: ["generate", "./"]
+          - name: argocd-vault-plugin-repo
+            init:
+              command: [sh, -c]
+              args: ["helm repo add argo-cd https://mogofinancial.github.io/argo-helm-repo && helm dependency build"]
+            generate:
+              command: ["bash", "-c"]
+              args: ['helm template "$ARGOCD_APP_NAME" . > app.yaml && argocd-vault-plugin generate app.yaml']
+          - name: argocd-vault-plugin-helm
+            init:
+              command: [sh, -c]
+              args: ["helm dependency build"]
+            generate:
+              command: ["bash", "-c"]
+              args: ['helm template $ARGOCD_APP_NAME ${helm_args} . > app.yaml && argocd-vault-plugin generate app.yaml']
+          - name: argocd-vault-plugin-inline
+            generate:
+              command: ["bash", "-c"]
+              args: ['helm template "$ARGOCD_APP_NAME" -f <(echo "$HELM_VALUES") . | argocd-vault-plugin generate -']
+      repositories: |
+        - name: argo-cd-git
+          url: https://github.com/mogofinancial/argo-helm-repo.git
+        - type: helm
+          name: argo-cd
+          url: https://mogofinancial.github.io/argo-helm-repo
+      dex.config: |
+        logger:
+          level: info
+          format: json
+        connectors:
+        - type: saml
+          id: saml
+          name: saml
+          config:
+            entityIssuer: https://argocd.dev.mogodevops.com/api/dex/callback
+            ssoURL: $argocd-sso-secret:ssourl
+            caData: $argocd-sso-secret:cacert
+            redirectURI: https://argocd.dev.mogodevops.com/api/dex/callback
+            usernameAttr: email
+            emailAttr: email
+            groupsAttr: Group

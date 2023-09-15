@@ -1,0 +1,6 @@
+dependencies:
+- name: argo-cd
+  repository: https://mogofinancial.github.io/argo-helm-repo
+  version: 1.0.6
+digest: sha256:fe33068e84f27764ed70c9f4096b776172a408868f7c1d38b56d75bb8a15ab52
+generated: "2022-09-16T17:18:07.805222-07:00"
